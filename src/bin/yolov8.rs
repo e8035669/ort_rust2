@@ -15,10 +15,6 @@ use opencv::imgproc::{
 use opencv::prelude::*;
 use ort::{inputs, CUDAExecutionProvider, GraphOptimizationLevel::Level3, Session};
 
-fn print_type_of<T>(_: &T) {
-    println!("{}", std::any::type_name::<T>())
-}
-
 #[rustfmt::skip]
 const YOLOV8_CLASS_LABELS: [&str; 80] = [
     "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light",

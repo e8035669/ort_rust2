@@ -7,7 +7,6 @@ use ndarray_stats::QuantileExt;
 use opencv::core as cv;
 use opencv::dnn::nms_boxes_batched;
 use opencv::highgui::{imshow, named_window, wait_key, WINDOW_NORMAL};
-use opencv::imgcodecs::{imread, IMREAD_COLOR};
 use opencv::imgproc::{
     cvt_color, put_text, rectangle, resize, COLOR_BGR2RGB, FONT_HERSHEY_SIMPLEX, INTER_CUBIC,
     LINE_8,
@@ -15,10 +14,6 @@ use opencv::imgproc::{
 use opencv::prelude::*;
 use opencv::videoio::{VideoCapture, CAP_ANY};
 use ort::{inputs, CUDAExecutionProvider, GraphOptimizationLevel::Level3, Session};
-
-fn print_type_of<T>(_: &T) {
-    println!("{}", std::any::type_name::<T>())
-}
 
 #[rustfmt::skip]
 const YOLOV8_CLASS_LABELS: [&str; 80] = [
