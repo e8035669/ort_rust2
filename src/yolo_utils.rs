@@ -3,8 +3,11 @@ use std::path::{Path, PathBuf};
 
 use anyhow::anyhow;
 use cv_convert::TryFromCv;
-use ndarray::{Array, Axis, Ix3, Ix4};
+use itertools::izip;
+use ndarray::{s, Array, Axis, Ix2, Ix3, Ix4};
+use ndarray_stats::QuantileExt;
 use opencv::core as cv;
+use opencv::dnn::nms_boxes_batched;
 use opencv::imgproc::{cvt_color, resize, COLOR_BGR2RGB, INTER_CUBIC};
 use opencv::prelude::*;
 use ort::{inputs, CUDAExecutionProvider, GraphOptimizationLevel::Level3, Session};
@@ -36,7 +39,68 @@ pub fn preprocess(bgr_img: &impl cv::ToInputArray) -> Result<PreprocessInfo, Box
     Ok(PreprocessInfo { imgsz, tensor })
 }
 
-pub fn postprocess() {}
+pub struct PredictResult {
+    pub bbox: cv::Rect,
+    pub score: f32,
+    pub cls: i32,
+}
+
+impl PredictResult {
+    pub fn new(bbox: cv::Rect, score: f32, cls: i32) -> Self {
+        Self { bbox, score, cls }
+    }
+}
+
+pub fn postprocess(
+    output: &Array<f32, Ix2>,
+    imgsz: &cv::Size,
+) -> Result<Vec<PredictResult>, Box<dyn Error>> {
+    let mut bboxes = cv::Vector::<cv::Rect>::new();
+    let mut scores = cv::Vector::<f32>::new();
+    let mut classes = cv::Vector::<i32>::new();
+    let mut indices = cv::Vector::<i32>::new();
+
+    for row in output.axis_iter(Axis(0)) {
+        let confidences = row.slice(s![4..]);
+        let cls = confidences.argmax()?;
+        let conf = confidences[[cls]];
+
+        if conf > 0.5 {
+            let xc = row[0] / 640. * (imgsz.width as f32);
+            let yc = row[1] / 640. * (imgsz.height as f32);
+            let w = row[2] / 640. * (imgsz.width as f32);
+            let h = row[3] / 640. * (imgsz.height as f32);
+            let x = xc - w / 2.;
+            let y = yc - h / 2.;
+
+            bboxes.push(cv::Rect::new(x as i32, y as i32, w as i32, h as i32));
+            scores.push(conf);
+            classes.push(cls as i32);
+        }
+    }
+
+    nms_boxes_batched(&bboxes, &scores, &classes, 0.5, 0.5, &mut indices, 1.0, 0)?;
+
+    let bboxes: Vec<cv::Rect> = indices
+        .iter()
+        .map(|i| bboxes.get(i as _).unwrap().clone())
+        .collect();
+    let scores: Vec<f32> = indices
+        .iter()
+        .map(|i| scores.get(i as _).unwrap().clone())
+        .collect();
+    let classes: Vec<i32> = indices
+        .iter()
+        .map(|i| classes.get(i as _).unwrap().clone())
+        .collect();
+
+    let result: Vec<_> = izip!(&bboxes, &scores, &classes)
+        .into_iter()
+        .map(|(b, s, c)| PredictResult::new(b.to_owned(), s.to_owned(), c.to_owned()))
+        .collect();
+
+    Ok(result)
+}
 
 #[rustfmt::skip]
 pub const YOLOV8_CLASS_LABELS: [&str; 80] = [
@@ -63,15 +127,37 @@ impl Yolov8 {
         Yolov8Builder { model_path: None }
     }
 
-    pub fn detect(&self, img: &impl cv::ToInputArray) -> Result<(), Box<dyn Error>> {
-        let info = preprocess(img).unwrap();
+    pub fn detect(
+        &self,
+        img: &impl cv::ToInputArray,
+    ) -> Result<Vec<PredictResult>, Box<dyn Error>> {
+        let info = preprocess(img)?;
         let tensor = info.tensor.view();
         let outputs = self.sess.run(inputs!["images" => tensor]?)?;
         let output = outputs["output0"].extract_tensor::<f32>()?;
         // (1, 84, N) -> (N, 84, 1) -> (N, 84)
-        let output = output.view().t().index_axis(Axis(2), 0).to_owned();
+        let output: Array<f32, Ix2> = output
+            .view()
+            .t()
+            .index_axis(Axis(2), 0)
+            .into_dimensionality()?
+            .to_owned();
+        let pred_ret = postprocess(&output, &info.imgsz)?;
 
-        Ok(())
+        Ok(pred_ret)
+    }
+
+    pub fn forward(&self, info: &PreprocessInfo) -> Result<Array<f32, Ix2>, Box<dyn Error>> {
+        let tensor = info.tensor.view();
+        let outputs = self.sess.run(inputs!["images" => tensor]?)?;
+        let output = outputs["output0"].extract_tensor::<f32>()?;
+        let output = output
+            .view()
+            .t()
+            .index_axis(Axis(2), 0)
+            .into_dimensionality()?
+            .to_owned();
+        Ok(output)
     }
 }
 
