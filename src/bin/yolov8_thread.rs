@@ -15,12 +15,12 @@ use ort_rust2::yolo_utils::{self, Yolov8, YOLOV8_CLASS_LABELS};
 
 struct ImageSender {
     cap: VideoCapture,
-    tx: mpsc::Sender<Mat>,
+    tx: mpsc::SyncSender<Mat>,
     should_stop: Arc<AtomicBool>,
 }
 
 impl ImageSender {
-    fn new(cap: VideoCapture, tx: mpsc::Sender<Mat>, should_stop: Arc<AtomicBool>) -> Self {
+    fn new(cap: VideoCapture, tx: mpsc::SyncSender<Mat>, should_stop: Arc<AtomicBool>) -> Self {
         Self {
             cap,
             tx,
@@ -61,11 +61,11 @@ type Predicted = (Mat, yolo_utils::PreprocessInfo, Array<f32, Ix2>);
 
 struct Preprocesser {
     rx: mpsc::Receiver<Mat>,
-    tx: mpsc::Sender<Preprocessed>,
+    tx: mpsc::SyncSender<Preprocessed>,
 }
 
 impl Preprocesser {
-    fn new(rx: mpsc::Receiver<Mat>, tx: mpsc::Sender<Preprocessed>) -> Self {
+    fn new(rx: mpsc::Receiver<Mat>, tx: mpsc::SyncSender<Preprocessed>) -> Self {
         Self { rx, tx }
     }
 
@@ -93,11 +93,11 @@ impl Preprocesser {
 struct ModelInference {
     model: Yolov8,
     rx: mpsc::Receiver<Preprocessed>,
-    tx: mpsc::Sender<Predicted>,
+    tx: mpsc::SyncSender<Predicted>,
 }
 
 impl ModelInference {
-    fn new(model: Yolov8, rx: mpsc::Receiver<Preprocessed>, tx: mpsc::Sender<Predicted>) -> Self {
+    fn new(model: Yolov8, rx: mpsc::Receiver<Preprocessed>, tx: mpsc::SyncSender<Predicted>) -> Self {
         Self { model, rx, tx }
     }
 
@@ -204,7 +204,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let model = Yolov8::builder().with_model_path("yolov8m.onnx").build()?;
 
     let should_stop = Arc::new(AtomicBool::new(false));
-    let (tx1, rx1) = mpsc::channel();
+    let (tx1, rx1) = mpsc::sync_channel(0);
 
     let should_stop_clone = Arc::clone(&should_stop);
     let thread1 = thread::spawn(move || {
@@ -212,13 +212,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         image_sender.run();
     });
 
-    let (tx2, rx2) = mpsc::channel();
+    let (tx2, rx2) = mpsc::sync_channel(0);
     let thread2 = thread::spawn(move || {
         let mut preprocesser = Preprocesser::new(rx1, tx2);
         preprocesser.run();
     });
 
-    let (tx3, rx3) = mpsc::channel();
+    let (tx3, rx3) = mpsc::sync_channel(0);
     let thread3 = thread::spawn(move || {
         let mut model_inference = ModelInference::new(model, rx2, tx3);
         model_inference.run();
